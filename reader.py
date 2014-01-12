@@ -396,7 +396,7 @@ def test_datum():
                 syntax(start,
                        pos(1, 3),
                        ktype.true))
-    check_equal("Proper list datum",
+    check_equal("Simple proper list datum",
                 dfs("(#t #f)"),
                 syntax(start,
                        pos(1, 8),
@@ -407,6 +407,16 @@ def test_datum():
                                                     pos(1, 7),
                                                     ktype.false),
                                              ktype.nil))))
+    check_equal("Simple pair datum",
+                dfs("(a . 5)"),
+                syntax(start,
+                       pos(1, 8),
+                       ktype.pair(syntax(pos(1, 2),
+                                         pos(1, 3),
+                                         ktype.symbol.intern('a')),
+                                  syntax(pos(1, 6),
+                                         pos(1, 7),
+                                         ktype.fixnum(5)))))
 
 # Utilities used by tests only.
 
