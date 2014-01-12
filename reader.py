@@ -396,6 +396,19 @@ def test_datum():
                 syntax(start,
                        pos(1, 3),
                        ktype.true))
+    check_equal("Empty list datum",
+                dfs("()"),
+                syntax(start,
+                       pos(1, 3),
+                       ktype.nil))
+    check_equal("Unary list datum",
+                dfs("(#\\newline)"),
+                syntax(start,
+                       pos(1, 12),
+                       ktype.pair(syntax(pos(1, 2),
+                                         pos(1, 11),
+                                         ktype.character('\n')),
+                                  ktype.nil)))
     check_equal("Simple proper list datum",
                 dfs("(#t #f)"),
                 syntax(start,
@@ -407,6 +420,24 @@ def test_datum():
                                                     pos(1, 7),
                                                     ktype.false),
                                              ktype.nil))))
+    check_equal(
+        "Longer proper list datum",
+         dfs("(#t #f maybe)"),
+         syntax(start,
+             pos(1, 14),
+             ktype.pair(
+                 syntax(pos(1, 2),
+                        pos(1, 4),
+                        ktype.true),
+                 ktype.pair(
+                     syntax(pos(1, 5),
+                            pos(1, 7),
+                            ktype.false),
+                     ktype.pair(
+                         syntax(pos(1, 8),
+                                pos(1, 13),
+                                ktype.symbol.intern('maybe')),
+                         ktype.nil)))))
     check_equal("Simple pair datum",
                 dfs("(a . 5)"),
                 syntax(start,
@@ -417,6 +448,19 @@ def test_datum():
                                   syntax(pos(1, 6),
                                          pos(1, 7),
                                          ktype.fixnum(5)))))
+    check_equal("Longer improper list datum",
+                dfs('(a 5 . "yes")'),
+                syntax(start,
+                       pos(1, 14),
+                       ktype.pair(syntax(pos(1, 2),
+                                         pos(1, 3),
+                                         ktype.symbol.intern('a')),
+                                  ktype.pair(syntax(pos(1, 4),
+                                                    pos(1, 5),
+                                                    ktype.fixnum(5)),
+                                             syntax(pos(1, 8),
+                                                    pos(1, 13),
+                                                    ktype.string("yes"))))))
 
 # Utilities used by tests only.
 

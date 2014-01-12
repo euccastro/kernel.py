@@ -84,6 +84,7 @@ class pair(kernel_type):
             ret.append(")")
         else:
             ret.append(" . %r)" % cdr)
+        return "".join(ret)
     def __eq__(self, other):
         return (isinstance(other, pair)
                 and other.car == self.car
