@@ -15,13 +15,18 @@ import sys
 #    straightforward ffi wrappers.
 #
 
-identifier_chars = string.letters + string.digits + "!$%&*+-./:<=>?@^_~λ"
-invalid = "`',"
+first_identifier_chars = string.letters + "!$%&*/:<=>?@^_~λ"
+rest_identifier_chars = first_identifier_chars + string.digits + "+-."
 
-# XXX: Only the most straightforward fixnums and flonums supported yet.  No
-# ratios, complex numbers, nor exponent notation.
-first_number_char = string.digits + "+-."
-rest_number_char = string.digits + "."
+invalid = "`',"
+delimiters = string.whitespace + '();"'
+
+def tokens(stream):
+    try:
+        while True:
+            yield token(stream)
+    except EOFError:
+        pass
 
 # Return the longest token matched by the head of the stream, or None
 # if no token can be matched.
@@ -39,11 +44,24 @@ def token(stream):
     if c in '()':
         return first + (c,)
     stream.put_back(first)
-    # The `identifier` production also recognizes the dot ('.') token.
-    for production in string_, character, number, boolean, identifier:
-        ret = production(stream)
-        if ret:
-            return ret
+    ret = string_(stream)
+    if ret:
+        return ret
+    chars = to_delimiter_or_EOF(stream)
+    if not chars:
+        return None
+    s = ''.join(char[-1] for char in chars)
+    for name, parser in [('boolean', boolean),
+                         ('character', character),
+                         ('fixnum', fixnum),
+                         ('flonum', flonum),
+                         ('.', dot),
+                         ('identifier', identifier)]:
+        val = parser(s)
+        if val is not None:
+            return filename, line, col, name, val
+    for char in reversed(chars):
+        stream.put_back(char)
     return None
 
 def string_(stream):
@@ -69,99 +87,55 @@ def string_(stream):
             else:
                 ret.append(c)
 
-def character(stream):
-    first = filename, line, col, _ = stream.read_char()
-    stream.put_back(first)
-    if not match(stream, '#\\'):
-        return None
-    for charname, ascii in [('alarm', 7),
-                            ('backspace', 8),
-                            ('delete', 127),
-                            ('escape', 27),
-                            ('newline', 10),
-                            ('null', 0),
-                            ('return', 13),
-                            ('space', 32),
-                            ('tab', 9)]:
-        if match(stream, charname):
-            c = chr(ascii)
-            break
-    else:
-        _, _, _, c = stream.read_char()
-    return filename, line, col, 'character', c
+named_chars = {'#\\alarm': '\a',
+               '#\\backspace': '\b',
+               '#\\delete': '\x7f',
+               '#\\escape': '\x1b',
+               '#\\newline': '\n',
+               '#\\null': '\x00',
+               '#\\return': '\r',
+               '#\\space': ' ',
+               '#\\tab': '\t'}
 
-
-def number(stream):
-    first = filename, line, col, c = stream.read_char()
-    if c not in first_number_char:
-        stream.put_back(first)
+def character(s):
+    if not s.startswith('#\\'):
         return None
-    ret = [first]
-    try:
-        while True:
-            next = stream.read_char()
-            if next[-1] in rest_number_char:
-                ret.append(next)
-            else:
-                stream.put_back(next)
-                break
-    except EOFError:
-        pass
-    s = ''.join(each[-1] for each in ret)
-    if any(c for c in s if c in string.digits):
-        ndots = s.count(".")
-        if ndots == 0:
-            return filename, line, col, 'fixnum', int(s)
-        elif ndots == 1:
-            return filename, line, col, 'flonum', float(s)
-    for each in reversed(ret):
-        stream.put_back(each)
+    if len(s) == 3:
+        return s[2]
+    elif len(s) > 3:
+        return named_chars.get(s)
     return None
 
-def boolean(stream):
-    first = filename, line, col, c = stream.read_char()
-    if c != '#':
-        stream.put_back(first)
-        return None
-    second = _, _, _, c = stream.read_char()
-    if c == 't':
-        return filename, line, col, 'boolean', True
-    elif c == 'f':
-        return filename, line, col, 'boolean', False
-    else:
-        stream.put_back(second)
-        stream.put_back(first)
-        return None
-
-def identifier(stream):
-    first = filename, line, col, c = stream.read_char()
-    stream.put_back(first)
-    chars = []
+def fixnum(s):
     try:
-        while True:
-            next = _, _, _, c = stream.read_char()
-            if c in identifier_chars:
-                chars.append(c)
-            else:
-                stream.put_back(next)
-                break
-    except EOFError:
-        pass
-    if not chars:
+        return int(s)
+    except ValueError:
         return None
-    name = ''.join(char[-1] for char in chars)
-    if name == '.':
-        return filename, line, col, '.', '.'
-    elif name.startswith('.'):
-        # It would be easier to just support names starting with '.', but
-        # the R-1RK explicitly forbids them, so we reserve them at least
-        # for the time being.
-        for char in reversed(chars):
-            stream.put_back(char)
-        return None
-    else:
-        return filename, line, col, 'identifier', name
 
+def flonum(s):
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+booleans = {'#t': True, '#f': False}
+boolean = booleans.get
+
+def dot(s):
+    if s == '.':
+        return '.'
+    else:
+        return None
+
+def identifier(s):
+    if s in '+-':
+        return s
+    if s[0] not in first_identifier_chars:
+        return None
+    for c in s[1:]:
+        if c not in rest_identifier_chars:
+            return None
+    return s
 
 # Exceptions.
 
@@ -236,6 +210,19 @@ def match(stream, string):
             return False
     return True
 
+def to_delimiter_or_EOF(stream):
+    ret = []
+    try:
+        while True:
+            next = _, _, _, c = stream.read_char()
+            if c in delimiters:
+                stream.push_back(c)
+                break
+            else:
+                ret.append(next)
+    except EOFError:
+        pass
+    return ret
 
 # Tests.
 
@@ -273,7 +260,6 @@ def test_token():
                    ('#f', False)]:
         check_token("boolean %r" % src, src, 'boolean', b)
     check_token('.', '.', '.', '.')
-    check_not_token('. with something after', '.blah')
     for src in ['$lambda',
                 'list->vector',
                 '+',
@@ -284,6 +270,10 @@ def test_token():
                 'V17a',
                 'a34kTMNs']:
         check_token('identifier %r' % src, src, 'identifier', src)
+    check_not_token('. with something after', '.blah')
+    check_not_token("start looks like a number", '123abc')
+    check_not_token("start looks like a boolean", '#false')
+    check_not_token("start looks like a character", '#\\unrecognized')
 
 
 # Utilities used by tests only.
