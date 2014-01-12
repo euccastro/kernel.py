@@ -26,33 +26,46 @@ delimiters = string.whitespace + '();"'
 
 
 def datum_from_token_stream(ts):
-    tok = filename, line, col, type, val = ts.next()
-    if type == '(':
+    first = ts.next()
+    if first.data == '(':
         pre_dot = []
         try:
             while True:
-                filename_, line_, col_, type, val = ts.next()
-                if type == '.':
+                next = ts.next()
+                if next.data == '.':
                     if not pre_dot:
-                        raise kernel_syntax_error(filename_, line_, col_,
-                                                  "malformed improper list (no data before dot)")
-                    post_dot = datum_from_token_stream(ti)
-                    filename_, line_, col_, type, val = ts.next()
-                    if type != ')':
-                        raise kernel_syntax_error(filename_, line_, col_,
-                                                  "closing ) expected at end of improper list")
-                    return filename, line, col, 'pair', cons_star(pre_dot, post_dot)
+                        raise kernel_syntax_error(
+                                next,
+                                "malformed improper list (no data before dot)")
+                    post_dot = datum_from_token_stream(ts)
+                    next = ts.next()
+                    if next.data != ')':
+                        raise kernel_syntax_error(
+                                next,
+                                "closing ) expected at end of improper list")
+                    return syntax(first.filename, first.line, first.col,
+                                  cons_star(pre_dot, post_dot))
                 elif type == ')':
-                    return filename, line, col, 'list', cons_star(pre_dot, nil)
+                    return syntax(first.filename, first.line, first.col,
+                                  cons_star(pre_dot, syntax(next.filename,
+                                                            next.line,
+                                                            next.col,
+                                                            ktype.nil)))
                 else:
                     ts.push_back(next)
                     pre_dot.append(datum_from_token_stream(ts))
         except EOFError:
-            raise kernel_syntax_error(filename, line, col,
+            raise kernel_syntax_error(startpos,
                                       "incomplete form")
     else:
-        return s
+        assert isinstance(ktype.kernel_type, first.data)
+        return first
 
+def cons_star(pre_dot, post_dot):
+    ret = post_dot
+    for syn in reversed(pre_dot):
+        ret = syntax(syn.filename, syn.line, syn.col, ktype.pair(syn, ret))
+    return ret
 
 def tokens(stream):
     try:
@@ -73,34 +86,35 @@ def tokens(stream):
 # token = <identifier> | <boolean> | <number> | <character>  | <string>
 #       | ( | ) | .
 def token(stream):
-    first = stream.next()
-    if first.data in '()':
-        return first
-    stream.put_back(first)
+    startpos, c = stream.next()
+    if c in '()':
+        return syntax(startpos, startpos.next(), c)
+    stream.put_back((startpos, c))
     ret = string_(stream)
     if ret:
         return ret
     chars = to_delimiter_or_EOF(stream)
     if not chars:
         return None
-    s = ''.join(char.data for char in chars)
+    s = ''.join(c for pos, c in chars)
     for parser in [boolean, character, fixnum, flonum, dot, identifier]:
         val = parser(s)
         if val is not None:
-            return syntax(first.filename, first.line, first.col, val)
+            endpos = chars[-1][0].next()
+            return syntax(startpos, endpos, val)
     stream.put_back_iter(chars)
     return None
 
 def string_(stream):
-    first = stream.next()
-    if first.data != '"':
-        stream.put_back(first)
+    startpos, c = stream.next()
+    if c != '"':
+        stream.put_back((startpos, c))
         return None
     escape = False
     ret = []
     try:
         while True:
-            c = stream.next().data
+            nextpos, c = stream.next()
             if escape:
                 if c == "n":
                     ret.append('\n')
@@ -111,13 +125,12 @@ def string_(stream):
                 if c == "\\":
                     escape = True
                 elif c == '"':
-                    return syntax(first.filename, first.line, first.col,
+                    return syntax(startpos, nextpos.next(),
                                   ktype.string(''.join(ret)))
                 else:
                     ret.append(c)
     except EOFError:
-        raise kernel_syntax_error(first, "unclosed string literal")
-
+        raise kernel_syntax_error(startpos, "unclosed string literal")
 
 def character(s):
     if not s.startswith('#\\'):
@@ -169,36 +182,54 @@ def identifier(s):
 class mismatch(Exception): pass
 
 class kernel_syntax_error(Exception):
-    def __init__(self, syntax, msg):
-        self.syntax = syntax
+    def __init__(self, pos, msg):
+        self.pos = pos
         self.msg = msg
     def __str__(self):
         return ("SYNTAX ERROR at file %s, line %s, column %s -- %s"
-                % (self.syntax.filename,
-                   self.syntax.line,
-                   self.syntax.col,
+                % (self.pos.filename,
+                   self.pos.line,
+                   self.pos.col,
                    self.msg))
 
 
-# Stream utilities: keep track of filename, line and column numbers, and support
-# backtracking.
+# Stream utilities: keep track of filename, line and column numbers, and
+# support backtracking.
 
-class syntax:
-    "Anything that has associated a filename, line, and column in source code."
-    def __init__(self, filename, line, col, data):
+class position:
+    def __init__(self, filename, line, col):
         self.filename = filename
         self.line = line
         self.col = col
+    def __eq__(self, other):
+        return (isinstance(other, position)
+                and other.filename == self.filename
+                and other.line == self.line
+                and other.col == self.col)
+    def __ne__(self, other):
+        return not self.__eq__(other)
+    def __str__(self):
+        return "%s(%s,%s)" % (self.filename, self.line, self.col)
+    def __repr__(self):
+        return ("position(filename=%r, line=%s, col=%s)"
+                % self.filename, self.line, self.col)
+    def next(self):
+        return position(self.filename, self.line, self.col + 1)
+
+class syntax:
+    "Anything that has associated a start and end location in source code."
+    def __init__(self, start, end, data):
+        self.start = start
+        self.end = end
         self.data = data
     def __repr__(self):
-        return ("syntax(filename=%r, line=%r, col=%r, data=%r)"
-                % (self.filename, self.line, self.col, self.data))
+        return ("syntax(start=%s, end=%s, data=%r)"
+                % (self.start, self.end, self.data))
     def __eq__(self, other):
         "For testing."
         return (isinstance(other, syntax)
-                and other.filename == self.filename
-                and other.line == self.line
-                and other.col == self.col
+                and other.start == self.start
+                and other.end == self.end
                 and other.data == self.data)
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -237,7 +268,7 @@ class line_col_enumerator:
             self.column = 0
         else:
             self.column += 1
-        return syntax(filename, self.line, self.column, c)
+        return position(filename, self.line, self.column), c
 
 class bufferer:
     """
@@ -267,7 +298,7 @@ def match(stream, string):
     for c in string:
         try:
             backlog.append(stream.next())
-            if backlog[-1].data != c:
+            if backlog[-1][1] != c:
                 raise mismatch
         except (EOFError, mismatch):
             stream.put_back_iter(backlog)
@@ -278,12 +309,12 @@ def to_delimiter_or_EOF(stream):
     ret = []
     try:
         while True:
-            next = stream.next()
-            if next.data in delimiters:
-                stream.push_back(next)
+            nextpos, c = stream.next()
+            if c in delimiters:
+                stream.push_back((nextpos, c))
                 break
             else:
-                ret.append(next)
+                ret.append((nextpos, c))
     except EOFError:
         pass
     return ret
@@ -298,14 +329,21 @@ def test_token():
         check_token(('basic %r' % basic), basic, basic)
         check_token(('basic %r with something after' % basic),
                     basic + 'etc',
-                    basic)
+                    basic,
+                    1,
+                    2)
     #XXX: add more string niceties defined in R7RS?
-    for src, body in [('"basic string"', "basic string"),
-                      (r'"escaped\nnewline"', "escaped\nnewline"),
-                      ('"physical\nnewline"', "physical\nnewline"),
-                      (r'"escaped\"doublequote"', "escaped\"doublequote"),
-                      ('"literal double quo"te"', "literal double quo")]:
-        check_token(('string %r' % src), src, ktype.string(body))
+    for src, body, endline, endcol in [
+            ('"basic string"', "basic string", 1, None),
+            (r'"escaped\nnewline"', "escaped\nnewline", 1, None),
+            ('"physical\nnewline"', "physical\nnewline", 2, 9),
+            (r'"escaped\"doublequote"', "escaped\"doublequote", 1, None),
+            ('"literal double quo"te"', "literal double quo", 1, 21)]:
+        check_token(('string %r' % src),
+                    src,
+                    ktype.string(body),
+                    endline,
+                    endcol)
     #XXX: hex escapes?
     for src, char in [(r'#\a', 'a'),
                       (r'#\newline', '\n')]:
@@ -345,12 +383,18 @@ def sfs(s):
     "Stream from string."
     return bufferer(line_col_enumerator(stream_adapter(StringIO(s), '<stdin>')))
 
-def check_token(title, s, tok):
-    if token(sfs(s)) != syntax('<stdin>', 1, 1, tok):
+def check_token(title, s, tok, endline=1, endcol=None):
+    if endcol is None:
+        endcol = 1+len(s)
+    expected = syntax(position('<stdin>', 1, 1),
+                      position('<stdin>', endline, endcol),
+                      tok)
+    actual = token(sfs(s))
+    if actual != expected:
         print >> sys.stderr
         print >> sys.stderr, "*** test %s FAILED:" % title
-        print >> sys.stderr, "Expected:", syntax('<stdin>', 1, 1, tok)
-        print >> sys.stderr, "But got :", token(sfs(s))
+        print >> sys.stderr, "Expected:", expected
+        print >> sys.stderr, "But got :", actual
         print >> sys.stderr
         assert False
 

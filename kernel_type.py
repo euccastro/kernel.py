@@ -6,7 +6,7 @@ class kernel_type(object):
         self.val = val
     def check(self, val):
         pass
-    def __repr__(self, val):
+    def __repr__(self):
         return repr(self.val)
     def __eq__(self, other):
         return isinstance(other, self.__class__) and other.val == self.val
@@ -28,6 +28,8 @@ class boolean(kernel_type):
             return "#t"
         else:
             return "#f"
+true = boolean(True)
+false = boolean(False)
 
 class string(kernel_type):
     def check(self, val):
