@@ -13,9 +13,9 @@ import kernel_type as ktype
 #  - We accept λ (for $lambda).  While $vau is more fundamental in kernel,
 #    I expect we'll use it less often.
 #
-#  - Identifiers are case sensitive.  Case insensitivity would make force
-#    us to take extra steps to disambiguate identifiers when doing
-#    straightforward ffi wrappers.
+#  - Identifiers are case sensitive.  Case insensitivity would force us to
+#    take extra steps to disambiguate identifiers when doing straightforward
+#    ffi wrappers.
 #
 
 first_identifier_chars = string.letters + "!$%&*/:<=>?@^_~λ"
