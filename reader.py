@@ -29,32 +29,30 @@ def datum_from_token_stream(ts):
     first = ts.next()
     if first.data == '(':
         pre_dot = []
-        try:
-            while True:
+        for next in ts:
+            if next.data == '.':
+                if not pre_dot:
+                    raise kernel_syntax_error(
+                            next,
+                            "malformed improper list (no data before dot)")
+                post_dot = datum_from_token_stream(ts)
                 next = ts.next()
-                if next.data == '.':
-                    if not pre_dot:
-                        raise kernel_syntax_error(
-                                next,
-                                "malformed improper list (no data before dot)")
-                    post_dot = datum_from_token_stream(ts)
-                    next = ts.next()
-                    if next.data != ')':
-                        raise kernel_syntax_error(
-                                next,
-                                "closing ) expected at end of improper list")
-                    return syntax(first.filename, first.line, first.col,
-                                  cons_star(pre_dot, post_dot))
-                elif type == ')':
-                    return syntax(first.filename, first.line, first.col,
-                                  cons_star(pre_dot, syntax(next.filename,
-                                                            next.line,
-                                                            next.col,
-                                                            ktype.nil)))
-                else:
-                    ts.put_back(next)
-                    pre_dot.append(datum_from_token_stream(ts))
-        except EOFError:
+                if next.data != ')':
+                    raise kernel_syntax_error(
+                            next,
+                            "closing ) expected at end of improper list")
+                return syntax(first.filename, first.line, first.col,
+                              cons_star(pre_dot, post_dot))
+            elif type == ')':
+                return syntax(first.filename, first.line, first.col,
+                              cons_star(pre_dot, syntax(next.filename,
+                                                        next.line,
+                                                        next.col,
+                                                        ktype.nil)))
+            else:
+                ts.put_back(next)
+                pre_dot.append(datum_from_token_stream(ts))
+        else:
             raise kernel_syntax_error(startpos,
                                       "incomplete form")
     else:
@@ -68,11 +66,8 @@ def cons_star(pre_dot, post_dot):
     return ret
 
 def tokens(stream):
-    try:
-        while True:
-            yield token(stream)
-    except EOFError:
-        pass
+    while True:
+        yield token(stream)
 
 # Return the longest token matched by the head of the stream, or None if no
 # token can be matched.
@@ -94,7 +89,7 @@ def token(stream):
     ret = string_(stream)
     if ret:
         return ret
-    chars = to_delimiter_or_EOF(stream)
+    chars = to_delimiter_or_end(stream)
     if not chars:
         return None
     s = ''.join(c for pos, c in chars)
@@ -107,25 +102,17 @@ def token(stream):
     return None
 
 def skip_whitespace(stream):
-    try:
-        while True:
-            next, c = stream.next()
-            if c == ';':
-                skip_to_end_of_line(stream)
-            elif c not in string.whitespace:
-                stream.put_back((next, c))
-                break
-    except EOFError:
-        pass
+    for next, c in stream:
+        if c == ';':
+            skip_to_end_of_line(stream)
+        elif c not in string.whitespace:
+            stream.put_back((next, c))
+            break
 
 def skip_to_end_of_line(stream):
-    try:
-        while True:
-            next, c = stream.next()
-            if c == '\n':
-                break
-    except EOFError:
-        pass
+    for next, c in stream:
+        if c == '\n':
+            break
 
 def string_(stream):
     startpos, c = stream.next()
@@ -134,24 +121,22 @@ def string_(stream):
         return None
     escape = False
     ret = []
-    try:
-        while True:
-            nextpos, c = stream.next()
-            if escape:
-                if c == "n":
-                    ret.append('\n')
-                else:
-                    ret.append(c)
-                escape = False
+    for nextpos, c in stream:
+        if escape:
+            if c == "n":
+                ret.append('\n')
             else:
-                if c == "\\":
-                    escape = True
-                elif c == '"':
-                    return syntax(startpos, nextpos.next(),
-                                  ktype.string(''.join(ret)))
-                else:
-                    ret.append(c)
-    except EOFError:
+                ret.append(c)
+            escape = False
+        else:
+            if c == "\\":
+                escape = True
+            elif c == '"':
+                return syntax(startpos, nextpos.next(),
+                              ktype.string(''.join(ret)))
+            else:
+                ret.append(c)
+    else:
         raise kernel_syntax_error(startpos, "unclosed string literal")
 
 def character(s):
@@ -268,7 +253,7 @@ class stream_adapter:
     def read_char(self):
         ret = self.stream.read(1)
         if not ret:
-            raise EOFError
+            raise StopIteration
         return self.filename, ret
 
 class line_col_enumerator:
@@ -301,6 +286,8 @@ class bufferer:
     def __init__(self, stream):
         self.stream = stream
         self.backlog = []
+    def __iter__(self):
+        return self
     def next(self):
         if self.backlog:
             return self.backlog.pop()
@@ -322,23 +309,19 @@ def match(stream, string):
             backlog.append(stream.next())
             if backlog[-1][1] != c:
                 raise mismatch
-        except (EOFError, mismatch):
+        except (StopIteration, mismatch):
             stream.put_back_iter(backlog)
             return False
     return True
 
-def to_delimiter_or_EOF(stream):
+def to_delimiter_or_end(stream):
     ret = []
-    try:
-        while True:
-            nextpos, c = stream.next()
-            if c in delimiters:
-                stream.put_back((nextpos, c))
-                break
-            else:
-                ret.append((nextpos, c))
-    except EOFError:
-        pass
+    for nextpos, c in stream:
+        if c in delimiters:
+            stream.put_back((nextpos, c))
+            break
+        else:
+            ret.append((nextpos, c))
     return ret
 
 # Tests.
