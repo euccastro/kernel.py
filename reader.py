@@ -52,7 +52,7 @@ def datum_from_token_stream(ts):
                                                             next.col,
                                                             ktype.nil)))
                 else:
-                    ts.push_back(next)
+                    ts.put_back(next)
                     pre_dot.append(datum_from_token_stream(ts))
         except EOFError:
             raise kernel_syntax_error(startpos,
@@ -86,6 +86,7 @@ def tokens(stream):
 # token = <identifier> | <boolean> | <number> | <character>  | <string>
 #       | ( | ) | .
 def token(stream):
+    skip_whitespace(stream)
     startpos, c = stream.next()
     if c in '()':
         return syntax(startpos, startpos.next(), c)
@@ -104,6 +105,27 @@ def token(stream):
             return syntax(startpos, endpos, val)
     stream.put_back_iter(chars)
     return None
+
+def skip_whitespace(stream):
+    try:
+        while True:
+            next, c = stream.next()
+            if c == ';':
+                skip_to_end_of_line(stream)
+            elif c not in string.whitespace:
+                stream.put_back((next, c))
+                break
+    except EOFError:
+        pass
+
+def skip_to_end_of_line(stream):
+    try:
+        while True:
+            next, c = stream.next()
+            if c == '\n':
+                break
+    except EOFError:
+        pass
 
 def string_(stream):
     startpos, c = stream.next()
@@ -311,7 +333,7 @@ def to_delimiter_or_EOF(stream):
         while True:
             nextpos, c = stream.next()
             if c in delimiters:
-                stream.push_back((nextpos, c))
+                stream.put_back((nextpos, c))
                 break
             else:
                 ret.append((nextpos, c))
@@ -330,8 +352,8 @@ def test_token():
         check_token(('basic %r with something after' % basic),
                     basic + 'etc',
                     basic,
-                    1,
-                    2)
+                    1, 1,
+                    1, 2)
     #XXX: add more string niceties defined in R7RS?
     for src, body, endline, endcol in [
             ('"basic string"', "basic string", 1, None),
@@ -342,8 +364,8 @@ def test_token():
         check_token(('string %r' % src),
                     src,
                     ktype.string(body),
-                    endline,
-                    endcol)
+                    1, 1,
+                    endline, endcol)
     #XXX: hex escapes?
     for src, char in [(r'#\a', 'a'),
                       (r'#\newline', '\n')]:
@@ -375,6 +397,15 @@ def test_token():
     check_not_token("start looks like a number", '123abc')
     check_not_token("start looks like a boolean", '#false')
     check_not_token("start looks like a character", '#\\unrecognized')
+    check_token("ignore leading whitespace",
+                "    blah",
+                ktype.symbol.intern('blah'),
+                1, 5, 1, 9)
+    check_token("ignore comments",
+                "   ; This is a comment\n    blah",
+                ktype.symbol.intern('blah'),
+                2, 5, 2, 9)
+    #XXX: R7RS #; datum comments.
 
 
 # Utilities used by tests only.
@@ -383,10 +414,12 @@ def sfs(s):
     "Stream from string."
     return bufferer(line_col_enumerator(stream_adapter(StringIO(s), '<stdin>')))
 
-def check_token(title, s, tok, endline=1, endcol=None):
+def check_token(title, s, tok,
+                startline=1, startcol=1,
+                endline=1, endcol=None):
     if endcol is None:
         endcol = 1+len(s)
-    expected = syntax(position('<stdin>', 1, 1),
+    expected = syntax(position('<stdin>', startline, startcol),
                       position('<stdin>', endline, endcol),
                       tok)
     actual = token(sfs(s))
