@@ -16,6 +16,8 @@ class kernel_type(object):
 class nil(kernel_type):
     def __init__(self):
         pass
+    def __eq__(self, other):
+        return other is self
     def __repr__(self):
         return "()"
 nil = nil()

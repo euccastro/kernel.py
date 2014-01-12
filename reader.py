@@ -33,36 +33,35 @@ def datum_from_token_stream(ts):
             if next.data == '.':
                 if not pre_dot:
                     raise kernel_syntax_error(
-                            next,
+                            next.start,
                             "malformed improper list (no data before dot)")
                 post_dot = datum_from_token_stream(ts)
                 next = ts.next()
                 if next.data != ')':
                     raise kernel_syntax_error(
-                            next,
+                            next.start,
                             "closing ) expected at end of improper list")
-                return syntax(first.filename, first.line, first.col,
+                return syntax(first.start,
+                              next.end,
                               cons_star(pre_dot, post_dot))
-            elif type == ')':
-                return syntax(first.filename, first.line, first.col,
-                              cons_star(pre_dot, syntax(next.filename,
-                                                        next.line,
-                                                        next.col,
-                                                        ktype.nil)))
+            elif next.data == ')':
+                return syntax(first.start,
+                              next.end,
+                              cons_star(pre_dot, ktype.nil))
             else:
                 ts.put_back(next)
                 pre_dot.append(datum_from_token_stream(ts))
         else:
-            raise kernel_syntax_error(startpos,
+            raise kernel_syntax_error(first.start,
                                       "incomplete form")
     else:
-        assert isinstance(ktype.kernel_type, first.data)
+        assert isinstance(first.data, ktype.kernel_type), repr(first.data)
         return first
 
 def cons_star(pre_dot, post_dot):
     ret = post_dot
-    for syn in reversed(pre_dot):
-        ret = syntax(syn.filename, syn.line, syn.col, ktype.pair(syn, ret))
+    for car in reversed(pre_dot):
+        ret = ktype.pair(car, ret)
     return ret
 
 def tokens(stream):
@@ -390,12 +389,37 @@ def test_token():
                 2, 5, 2, 9)
     #XXX: R7RS #; datum comments.
 
+def test_datum():
+    start = pos(1, 1)
+    check_equal("Atomic datum",
+                dfs("#t"),
+                syntax(start,
+                       pos(1, 3),
+                       ktype.true))
+    check_equal("Proper list datum",
+                dfs("(#t #f)"),
+                syntax(start,
+                       pos(1, 8),
+                       ktype.pair(syntax(pos(1, 2),
+                                         pos(1, 4),
+                                         ktype.true),
+                                  ktype.pair(syntax(pos(1, 5),
+                                                    pos(1, 7),
+                                                    ktype.false),
+                                             ktype.nil))))
 
 # Utilities used by tests only.
 
 def sfs(s):
     "Stream from string."
     return bufferer(line_col_enumerator(stream_adapter(StringIO(s), '<stdin>')))
+
+def dfs(s):
+    "Datum from string."
+    return datum_from_token_stream(bufferer(tokens(sfs(s))))
+
+def pos(line, col):
+    return position('<stdin>', line, col)
 
 def check_token(title, s, tok,
                 startline=1, startcol=1,
@@ -406,6 +430,9 @@ def check_token(title, s, tok,
                       position('<stdin>', endline, endcol),
                       tok)
     actual = token(sfs(s))
+    check_equal(title, actual, expected)
+
+def check_equal(title, actual, expected):
     if actual != expected:
         print >> sys.stderr
         print >> sys.stderr, "*** test %s FAILED:" % title
@@ -426,5 +453,6 @@ def check_not_token(title, s):
 
 if __name__ == '__main__':
     test_token()
+    test_datum()
     print
     print "All OK!"
