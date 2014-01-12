@@ -4,6 +4,9 @@ import string
 from StringIO import StringIO
 import sys
 
+from characters import char_from_name
+import kernel_type as ktype
+
 
 # Deviations from Kernel:
 #
@@ -21,6 +24,36 @@ rest_identifier_chars = first_identifier_chars + string.digits + "+-."
 invalid = "`',"
 delimiters = string.whitespace + '();"'
 
+
+def datum_from_token_stream(ts):
+    tok = filename, line, col, type, val = ts.next()
+    if type == '(':
+        pre_dot = []
+        try:
+            while True:
+                filename_, line_, col_, type, val = ts.next()
+                if type == '.':
+                    if not pre_dot:
+                        raise kernel_syntax_error(filename_, line_, col_,
+                                                  "malformed improper list (no data before dot)")
+                    post_dot = datum_from_token_stream(ti)
+                    filename_, line_, col_, type, val = ts.next()
+                    if type != ')':
+                        raise kernel_syntax_error(filename_, line_, col_,
+                                                  "closing ) expected at end of improper list")
+                    return filename, line, col, 'pair', cons_star(pre_dot, post_dot)
+                elif type == ')':
+                    return filename, line, col, 'list', cons_star(pre_dot, nil)
+                else:
+                    ts.push_back(next)
+                    pre_dot.append(datum_from_token_stream(ts))
+        except EOFError:
+            raise kernel_syntax_error(filename, line, col,
+                                      "incomplete form")
+    else:
+        return s
+
+
 def tokens(stream):
     try:
         while True:
@@ -28,8 +61,8 @@ def tokens(stream):
     except EOFError:
         pass
 
-# Return the longest token matched by the head of the stream, or None
-# if no token can be matched.
+# Return the longest token matched by the head of the stream, or None if no
+# token can be matched.
 #
 # From R7RS, page 62
 #
@@ -40,9 +73,9 @@ def tokens(stream):
 # token = <identifier> | <boolean> | <number> | <character>  | <string>
 #       | ( | ) | .
 def token(stream):
-    first = filename, line, col, c = stream.read_char()
-    if c in '()':
-        return first + (c,)
+    first = stream.next()
+    if first.data in '()':
+        return first
     stream.put_back(first)
     ret = string_(stream)
     if ret:
@@ -50,76 +83,69 @@ def token(stream):
     chars = to_delimiter_or_EOF(stream)
     if not chars:
         return None
-    s = ''.join(char[-1] for char in chars)
-    for name, parser in [('boolean', boolean),
-                         ('character', character),
-                         ('fixnum', fixnum),
-                         ('flonum', flonum),
-                         ('.', dot),
-                         ('identifier', identifier)]:
+    s = ''.join(char.data for char in chars)
+    for parser in [boolean, character, fixnum, flonum, dot, identifier]:
         val = parser(s)
         if val is not None:
-            return filename, line, col, name, val
-    for char in reversed(chars):
-        stream.put_back(char)
+            return syntax(first.filename, first.line, first.col, val)
+    stream.put_back_iter(chars)
     return None
 
 def string_(stream):
-    first = filename, line, col, c = stream.read_char()
-    if c != '"':
+    first = stream.next()
+    if first.data != '"':
         stream.put_back(first)
         return None
     escape = False
     ret = []
-    while True:
-        next = filename_, line_, col_, c = stream.read_char()
-        if escape:
-            if c == "n":
-                ret.append('\n')
+    try:
+        while True:
+            c = stream.next().data
+            if escape:
+                if c == "n":
+                    ret.append('\n')
+                else:
+                    ret.append(c)
+                escape = False
             else:
-                ret.append(c)
-            escape = False
-        else:
-            if c == "\\":
-                escape = True
-            elif c == '"':
-                return filename, line, col, 'string', ''.join(ret)
-            else:
-                ret.append(c)
+                if c == "\\":
+                    escape = True
+                elif c == '"':
+                    return syntax(first.filename, first.line, first.col,
+                                  ktype.string(''.join(ret)))
+                else:
+                    ret.append(c)
+    except EOFError:
+        raise kernel_syntax_error(first, "unclosed string literal")
 
-named_chars = {'#\\alarm': '\a',
-               '#\\backspace': '\b',
-               '#\\delete': '\x7f',
-               '#\\escape': '\x1b',
-               '#\\newline': '\n',
-               '#\\null': '\x00',
-               '#\\return': '\r',
-               '#\\space': ' ',
-               '#\\tab': '\t'}
 
 def character(s):
     if not s.startswith('#\\'):
         return None
     if len(s) == 3:
-        return s[2]
-    elif len(s) > 3:
-        return named_chars.get(s)
+        return ktype.character(s[2])
+    elif s in char_from_name:
+        return ktype.character(char_from_name[s])
     return None
 
 def fixnum(s):
     try:
-        return int(s)
+        return ktype.fixnum(int(s))
     except ValueError:
         return None
 
 def flonum(s):
     try:
-        return float(s)
+        return ktype.flonum(float(s))
     except ValueError:
         return None
 
 booleans = {'#t': True, '#f': False}
-boolean = booleans.get
+def boolean(s):
+    if s in booleans:
+        return ktype.boolean(booleans[s])
+    else:
+        return None
 
 def dot(s):
     if s == '.':
@@ -128,35 +154,61 @@ def dot(s):
         return None
 
 def identifier(s):
+    # In kernel all identifiers are names for symbols.
     if s in '+-':
-        return s
+        return ktype.symbol.intern(s)
     if s[0] not in first_identifier_chars:
         return None
     for c in s[1:]:
         if c not in rest_identifier_chars:
             return None
-    return s
+    return ktype.symbol.intern(s)
 
 # Exceptions.
 
 class mismatch(Exception): pass
 
 class kernel_syntax_error(Exception):
-    def __init__(self, filename, line, col, msg):
+    def __init__(self, syntax, msg):
+        self.syntax = syntax
+        self.msg = msg
+    def __str__(self):
+        return ("SYNTAX ERROR at file %s, line %s, column %s -- %s"
+                % (self.syntax.filename,
+                   self.syntax.line,
+                   self.syntax.col,
+                   self.msg))
+
+
+# Stream utilities: keep track of filename, line and column numbers, and support
+# backtracking.
+
+class syntax:
+    "Anything that has associated a filename, line, and column in source code."
+    def __init__(self, filename, line, col, data):
         self.filename = filename
         self.line = line
         self.col = col
-        self.msg = msg
-    def __str__(self):
-        return "SYNTAX ERROR at file %s, line %s, column %s -- %s" % (self.filename,
-                                                                      self.line,
-                                                                      self.col,
-                                                                      self.msg)
-
-# Stream utilities: keep track of line and column numbers, and support
-# backtracking.
+        self.data = data
+    def __repr__(self):
+        return ("syntax(filename=%r, line=%r, col=%r, data=%r)"
+                % (self.filename, self.line, self.col, self.data))
+    def __eq__(self, other):
+        "For testing."
+        return (isinstance(other, syntax)
+                and other.filename == self.filename
+                and other.line == self.line
+                and other.col == self.col
+                and other.data == self.data)
+    def __ne__(self, other):
+        return not self.__eq__(other)
 
 class stream_adapter:
+    """
+    A stream of (filename, char) pairs.
+
+    Take an object supporting the file protocol and a file name.
+    """
     def __init__(self, stream, filename):
         self.stream = stream
         self.filename = filename
@@ -167,11 +219,16 @@ class stream_adapter:
         return self.filename, ret
 
 class line_col_enumerator:
+    """
+    A stream of syntax objects with a single character each.
+
+    Take a stream_adapter.
+    """
     def __init__(self, stream):
         self.stream = stream
         self.line = 1
         self.column = 0
-    def read_char(self):
+    def next(self):
         filename, c = self.stream.read_char()
         if c == '\n':
             # The line and columns of whitespace will never be used, so we only
@@ -180,19 +237,27 @@ class line_col_enumerator:
             self.column = 0
         else:
             self.column += 1
-        return filename, self.line, self.column, c
+        return syntax(filename, self.line, self.column, c)
 
 class bufferer:
+    """
+    A stream that supports pushing read values back.
+
+    Take a stream.
+    """
     def __init__(self, stream):
         self.stream = stream
         self.backlog = []
-    def read_char(self):
+    def next(self):
         if self.backlog:
             return self.backlog.pop()
         else:
-            return self.stream.read_char()
+            return self.stream.next()
     def put_back(self, s):
         self.backlog.append(s)
+    def put_back_iter(self, iter):
+        for each in reversed(iter):
+            self.put_back(each)
 
 
 # Other utilities.
@@ -201,12 +266,11 @@ def match(stream, string):
     backlog = []
     for c in string:
         try:
-            backlog.append(stream.read_char())
-            if backlog[-1][-1] != c:
+            backlog.append(stream.next())
+            if backlog[-1].data != c:
                 raise mismatch
         except (EOFError, mismatch):
-            for each in reversed(backlog):
-                stream.put_back(each)
+            stream.put_back_iter(backlog)
             return False
     return True
 
@@ -214,9 +278,9 @@ def to_delimiter_or_EOF(stream):
     ret = []
     try:
         while True:
-            next = _, _, _, c = stream.read_char()
-            if c in delimiters:
-                stream.push_back(c)
+            next = stream.next()
+            if next.data in delimiters:
+                stream.push_back(next)
                 break
             else:
                 ret.append(next)
@@ -231,10 +295,9 @@ def test_token():
         check_not_token(('invalid %r' % invalid), invalid)
         check_not_token(('invalid %r with something after' % invalid), invalid + 'etc')
     for basic in '()':
-        check_token(('basic %r' % basic), basic, basic, basic)
+        check_token(('basic %r' % basic), basic, basic)
         check_token(('basic %r with something after' % basic),
                     basic + 'etc',
-                    basic,
                     basic)
     #XXX: add more string niceties defined in R7RS?
     for src, body in [('"basic string"', "basic string"),
@@ -242,11 +305,11 @@ def test_token():
                       ('"physical\nnewline"', "physical\nnewline"),
                       (r'"escaped\"doublequote"', "escaped\"doublequote"),
                       ('"literal double quo"te"', "literal double quo")]:
-        check_token(('string %r' % src), src, 'string', body)
+        check_token(('string %r' % src), src, ktype.string(body))
     #XXX: hex escapes?
     for src, char in [(r'#\a', 'a'),
                       (r'#\newline', '\n')]:
-        check_token(('char %r' % src), src, 'character', char)
+        check_token(('char %r' % src), src, ktype.character(char))
     for src, type, in [('1', 'fixnum'),
                        ('1.2', 'flonum'),
                        ('.1', 'flonum'),
@@ -255,11 +318,11 @@ def test_token():
                        ('+.1', 'flonum'),
                        ('+1.2', 'flonum'),
                        ('-1.2', 'flonum')]:
-        check_token("number %r" % src, src, type, eval(src))
+        check_token("number %r" % src, src, getattr(ktype, type)(eval(src)))
     for src, b in [('#t', True),
                    ('#f', False)]:
-        check_token("boolean %r" % src, src, 'boolean', b)
-    check_token('.', '.', '.', '.')
+        check_token("boolean %r" % src, src, ktype.boolean(b))
+    check_token('.', '.', '.')
     for src in ['$lambda',
                 'list->vector',
                 '+',
@@ -269,7 +332,7 @@ def test_token():
                 'soup',
                 'V17a',
                 'a34kTMNs']:
-        check_token('identifier %r' % src, src, 'identifier', src)
+        check_token('identifier %r' % src, src, ktype.symbol.intern(src))
     check_not_token('. with something after', '.blah')
     check_not_token("start looks like a number", '123abc')
     check_not_token("start looks like a boolean", '#false')
@@ -282,11 +345,11 @@ def sfs(s):
     "Stream from string."
     return bufferer(line_col_enumerator(stream_adapter(StringIO(s), '<stdin>')))
 
-def check_token(title, s, tok_type, tok_body):
-    if token(sfs(s)) != ('<stdin>', 1, 1, tok_type, tok_body):
+def check_token(title, s, tok):
+    if token(sfs(s)) != syntax('<stdin>', 1, 1, tok):
         print >> sys.stderr
         print >> sys.stderr, "*** test %s FAILED:" % title
-        print >> sys.stderr, "Expected:", ('<stdin>', 1, 1, tok_type, tok_body)
+        print >> sys.stderr, "Expected:", syntax('<stdin>', 1, 1, tok)
         print >> sys.stderr, "But got :", token(sfs(s))
         print >> sys.stderr
         assert False
