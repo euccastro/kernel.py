@@ -218,7 +218,7 @@ class position:
         return "%s(%s,%s)" % (self.filename, self.line, self.col)
     def __repr__(self):
         return ("position(filename=%r, line=%s, col=%s)"
-                % self.filename, self.line, self.col)
+                % (self.filename, self.line, self.col))
     def next(self):
         return position(self.filename, self.line, self.col + 1)
 
